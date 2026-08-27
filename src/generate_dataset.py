@@ -155,9 +155,14 @@ def main():
                     help="subset, e.g. '0-7' or '3,9,11'")
     ap.add_argument("--workers", type=int, default=0,
                     help="0 = os.cpu_count() - 1")
+    ap.add_argument("--draws", type=int, default=0,
+                    help="override DRAWS_PER_SHARD (testing)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
+    global DRAWS_PER_SHARD
+    if args.draws:
+        DRAWS_PER_SHARD = args.draws
     os.makedirs(OUT_DIR, exist_ok=True)
     if args.shards is None:
         ids = list(range(N_SHARD))
@@ -180,6 +185,12 @@ def main():
 
     workers = args.workers or max(1, (os.cpu_count() or 2) - 1)
     print(f"workers  : {workers}\n")
+
+    # Warm the numba JIT in the parent: with fork start-up the workers inherit
+    # the compiled code instead of racing to compile it six times over.
+    print("warming up numba ...", flush=True)
+    run_ckpt(10.0, 0.05, 1.0, 1.0, 400.0, 1.0,
+             np.array([50, 100], dtype=np.int64), 100, 0.999, 1)
 
     import multiprocessing as mp
     t0 = time.time()
