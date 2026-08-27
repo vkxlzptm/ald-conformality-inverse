@@ -176,6 +176,22 @@ NN 은 Π 를 추정하고, 알려진 조건(AR, dose)으로 s₀ 등을 역산�
 - 원격은 `tmux` 안에서 (ssh 끊겨도 계속)
 - `@njit(cache=True)` 라 재시작 시 재컴파일 없음
 
+## 4-d. 실행 환경
+
+```bash
+conda env create -f environment.yml
+conda activate pinn
+python src/trench_mc.py          # 그림이 나오면 정상
+```
+
+**`TypeError: expected dtype object, got 'numpy.dtypes.Int64DType'` 가 뜨면**
+numba 가 numpy 버전보다 오래된 것이다. `conda install -c conda-forge "numba>=0.60"` 로 해결.
+
+배치 실행은 로그인 셸이 아니므로 스크립트 안에서 conda 를 먼저 불러야 한다:
+```bash
+source ~/miniconda3/etc/profile.d/conda.sh && conda activate pinn
+```
+
 ## 5. 검증 계획
 
 1. 무반응 투과확률 vs 알려진 해석/표 값 — **코드 게이트**

@@ -1,0 +1,14 @@
+# conda env create -f environment.yml
+# conda activate pinn
+name: pinn
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - numba>=0.60          # numpy 2.x 호환. 낮으면 Int64DType 에러가 난다
+  - matplotlib
+  - scipy
+  - tqdm
+  # 학습 단계에서 추가 (지금은 불필요)
+  # - pytorch
