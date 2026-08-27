@@ -1,0 +1,28 @@
+# 생성 데이터 — 절대 커밋하지 말 것 (수 GB)
+results/
+data/
+*.npz
+*.npy
+*.h5
+
+# 학습 산출물
+*.pt
+*.pth
+*.ckpt
+runs/
+wandb/
+
+# 파이썬
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# 로컬 스크래치
+.commit_msg
+*.log
+nohup.out
+
+# macOS
+.DS_Store

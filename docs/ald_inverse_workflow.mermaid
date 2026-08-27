@@ -1,0 +1,51 @@
+flowchart TB
+    subgraph GEN["① Training-data generation &nbsp;·&nbsp; offline, once &nbsp;·&nbsp; hours"]
+    direction LR
+        P["<b>Sample parameter prior</b><br/>s₀ · steric exponent n · re-emission<br/>decomposition rate · site density"]
+        C["<b>Sample process conditions</b><br/>AR · dose · temperature"]
+        SIM["<b>Feature-scale MC simulator</b><br/>ballistic transport + re-emission + surface reaction<br/><i>written from scratch</i>"]
+        Y["<b>Depth profile θ(z)</b><br/>64-bin vector"]
+        NZ["<b>Apply measurement degradation</b><br/>thickness noise ±3%<br/>keep only ~10 depth points"]
+        DS[("<b>Dataset, 20,000 pairs</b><br/>input (y, c) → target p")]
+        P --> SIM
+        C --> SIM
+        SIM --> Y --> NZ --> DS
+    end
+
+    subgraph LEARN["② Training &nbsp;·&nbsp; offline, once &nbsp;·&nbsp; tens of minutes"]
+    direction LR
+        EMB["<b>Physics built into the architecture</b><br/>outputs → sigmoid / softplus enforce physical range<br/>inputs → dimensionless groups Π₁ = s₀·AR, Π₂ = dose / sites<br/><i>log scaling for quantities spanning decades</i>"]
+        NET["<b>1D CNN over profile y + condition c</b><br/>→ mixture density head<br/>→ posterior over parameters"]
+        EMB --> NET
+    end
+
+    subgraph USE["③ Inference &nbsp;·&nbsp; online &nbsp;·&nbsp; milliseconds"]
+    direction LR
+        MEAS["<b>One measured profile</b><br/>TEM cross-section → thickness vs depth"]
+        INF["<b>Forward pass of the trained net</b>"]
+        EST["<b>Parameter estimate + uncertainty</b><br/>s₀ · n · decomposition rate …"]
+        PRED["<b>Dose required for a different AR</b><br/>observe AR 20 → prescribe for AR 60"]
+        MEAS --> INF --> EST --> PRED
+    end
+
+    subgraph OLD["Conventional route &nbsp;·&nbsp; repeated per measurement &nbsp;·&nbsp; hours to days"]
+    direction LR
+        LSQ["<b>Derivative-free least squares</b><br/>10³–10⁴ simulator calls<br/>stochastic objective · multimodal"]
+        EST2["<b>Point estimate only</b><br/>no uncertainty"]
+        LSQ --> EST2
+    end
+
+    VAL["<b>④ Validation, four tests</b><br/>1. Zero-reaction transmission vs known analytic result &nbsp;— code gate<br/>2. Head-to-head with the least-squares baseline &nbsp;accuracy + wall-clock<br/>3. AR transfer &nbsp;observe AR 20 → predict AR 60<br/>4. Model misspecification &nbsp;mechanisms outside the training prior"]
+
+    DS ==> LEARN
+    LEARN ==trained==> USE
+    USE -.replaces.-> OLD
+    USE --> VAL
+    OLD --> VAL
+
+    style SIM fill:#14505f,color:#ffffff,stroke:#0b3038
+    style NET fill:#6b3a12,color:#ffffff,stroke:#3d2009
+    style EMB fill:#1f4d2a,color:#ffffff,stroke:#0f2a16
+    style DS fill:#2b2b2b,color:#ffffff,stroke:#000000
+    style OLD fill:#f5e2e2,stroke:#a33
+    style VAL fill:#eef2ff,stroke:#556
