@@ -64,6 +64,10 @@ NOISE_TARGET = 1200.0        # pseudo-particle weight cap, see mc_noise below
 #   training adds only the extra noise needed to reach the measurement level.
 STOP_THETA = 0.999
 
+# Printed estimate only.  Measured 1.4 s on dhl-desktop (x86, 6 cores) and 3.7 s
+# in the aarch64 dev container -- a 2.6x spread, so re-measure before trusting it.
+SEC_PER_EXAMPLE = 1.4
+
 
 # ---------------------------------------------------------------------- sampling
 def _loguniform(rng, lo, hi):
@@ -179,7 +183,8 @@ def main():
     print(f"shards   : {len(ids)} requested, {len(todo)} missing")
     print(f"examples : {n_ex:,} to generate "
           f"({len(ids)*DRAWS_PER_SHARD*K_CKPT:,} in the full set)")
-    print(f"estimate : {n_ex*15.0/3600:.1f} core-hours at ~15 s per example")
+    print(f"estimate : {n_ex*SEC_PER_EXAMPLE/3600:.1f} core-hours at "
+          f"{SEC_PER_EXAMPLE} s per example -- RE-MEASURE ON YOUR MACHINE")
     if args.dry_run or not todo:
         return
 
