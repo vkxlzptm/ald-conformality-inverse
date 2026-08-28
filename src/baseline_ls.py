@@ -64,11 +64,24 @@ def unpack(x):
 
 
 # ------------------------------------------------------------ forward model
-def forward(p, AR, pi2, seed):
-    """Three temperature profiles at one dose level. One 'simulator call'."""
+def dose_of(pi2, n_sites, AR):
+    """Absolute molecule count for a given dose-per-site and site density."""
+    return pi2 * (n_sites * np.pi * AR / NBIN * G.SPB_SCALE) * NBIN
+
+
+def forward(p, AR, dose, seed):
+    """Three temperature profiles at one dose. One 'simulator call'.
+
+    `dose` is the ABSOLUTE number of molecules entering the feature, which is
+    what a process actually sets (pressure x pulse time).  It must not be given
+    as Pi2 = dose / total sites: that denominator contains the site density we
+    are trying to infer, which makes the site density exactly unidentifiable.
+    Measured: doubling n_sites at fixed Pi2 changes the profile by 0.0000, at
+    fixed absolute dose by 0.28 (measurement noise is 0.03).
+    """
     spb = p["n_sites"] * np.pi * AR / NBIN * G.SPB_SCALE
     weight = max(1.0, spb / G.NOISE_TARGET)
-    ckpt = np.array([max(1, int(pi2 * spb * NBIN / weight))], dtype=np.int64)
+    ckpt = np.array([max(1, int(dose / weight))], dtype=np.int64)
     out = np.zeros((3, NBIN))
     for j, T in enumerate(G.TEMPS_K):
         s0 = float(G.s0_of_T(p["s0_ref"], p["Ea"], T))
@@ -83,29 +96,32 @@ def make_case(idx):
     """Reproducible benchmark case: truth, noisy masked observation, conditions."""
     rng = np.random.default_rng(1_000_003 + BENCH_SHARD + idx)
     truth = G.draw_params(rng)
-    pi2 = float(G.PI2_CKPT[OBS_CKPT])
-    clean = forward(truth, truth["AR"], pi2, seed=BENCH_SHARD * 100_003 + idx * 3)
+    # the recipe is specified as a dose-per-site on the TRUE surface, exactly as
+    # the training set was generated; what the solver is told is the resulting
+    # absolute dose, not that ratio
+    dose = dose_of(float(G.PI2_CKPT[OBS_CKPT]), truth["n_sites"], truth["AR"])
+    clean = forward(truth, truth["AR"], dose, seed=BENCH_SHARD * 100_003 + idx * 3)
 
     orng = np.random.default_rng(77_000 + idx)
     obs = clean * (1.0 + MEAS_NOISE * orng.standard_normal(clean.shape))
     obs = np.clip(obs, 0.0, 1.0)
     mask = np.ones(NBIN, bool)
     mask[orng.choice(NBIN, N_MASKED, replace=False)] = False
-    return truth, obs, mask, truth["AR"], pi2
+    return truth, obs, mask, truth["AR"], dose
 
 
-def sse(p, obs, mask, AR, pi2):
-    sim = forward(p, AR, pi2, CRN_SEED)          # common random numbers
+def sse(p, obs, mask, AR, dose):
+    sim = forward(p, AR, dose, CRN_SEED)         # common random numbers
     return float(((sim[:, mask] - obs[:, mask]) ** 2).sum())
 
 
 # ------------------------------------------------------------------- the fit
-def fit(obs, mask, AR, pi2, budget, starts, method, verbose=False):
+def fit(obs, mask, AR, dose, budget, starts, method, verbose=False):
     calls = {"n": 0}
 
     def obj(x):
         calls["n"] += 1
-        return sse(unpack(x), obs, mask, AR, pi2)
+        return sse(unpack(x), obs, mask, AR, dose)
 
     rng = np.random.default_rng(31337)
     best, best_f = None, np.inf
@@ -158,8 +174,8 @@ def _worker_init(budget, starts, method):
 
 def solve_case(i):
     """One benchmark case start to finish. Safe to run in a worker process."""
-    truth, obs, mask, AR, pi2 = make_case(i)
-    est, f, n, dt = fit(obs, mask, AR, pi2, _JOB["budget"], _JOB["starts"],
+    truth, obs, mask, AR, dose = make_case(i)
+    est, f, n, dt = fit(obs, mask, AR, dose, _JOB["budget"], _JOB["starts"],
                         _JOB["method"], False)
     return i, truth, est, f, n, dt
 
