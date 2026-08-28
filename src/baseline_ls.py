@@ -12,6 +12,7 @@ simulator calls, and wall-clock time.
     python src/baseline_ls.py --cases 4 --budget 400 --starts 2
 """
 import argparse
+import json
 import os
 import time
 
@@ -203,6 +204,9 @@ def main():
     ap.add_argument("--workers", type=int, default=0,
                     help="cases in parallel; 0 = cpu_count() - 2")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--json", default=os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "results", "baseline.json"))
     a = ap.parse_args()
 
     _JOB.update(budget=a.budget, starts=a.starts, method=a.method)
@@ -216,17 +220,32 @@ def main():
           f"{a.starts} starts   benchmark shard {BENCH_SHARD}   "
           f"{workers} workers\n", flush=True)
 
-    rows, t_wall = [], time.time()
+    rows, recs, t_wall = [], [], time.time()
+
+    def keep(r):
+        rows.append((r[4], r[5], _report(*r)))
+        recs.append(dict(case=r[0], truth={k: float(r[1][k]) for k in NAMES},
+                         est={k: float(r[2][k]) for k in NAMES},
+                         AR=float(r[1]["AR"]), sse=float(r[3]),
+                         calls=int(r[4]), seconds=float(r[5])))
+
     if workers == 1:
         for i in range(a.cases):
-            r = solve_case(i)
-            rows.append((r[4], r[5], _report(*r)))
+            keep(solve_case(i))
     else:
         import multiprocessing as mp
         with mp.Pool(workers, initializer=_worker_init,
                      initargs=(a.budget, a.starts, a.method)) as pool:
             for r in pool.imap_unordered(solve_case, range(a.cases)):
-                rows.append((r[4], r[5], _report(*r)))
+                keep(r)
+
+    os.makedirs(os.path.dirname(a.json), exist_ok=True)
+    with open(a.json, "w") as fh:
+        json.dump(dict(method=a.method, budget=a.budget, starts=a.starts,
+                       bench_shard=BENCH_SHARD, obs_ckpt=OBS_CKPT,
+                       cases=sorted(recs, key=lambda d: d["case"])), fh,
+                  indent=1)
+    print(f"\n  wrote {a.json}")
     print(f"\n  total wall clock: {(time.time()-t_wall)/60:.1f} min "
           f"({workers} cases at a time)")
 
