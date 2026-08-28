@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(ROOT, "figures", "network_architecture.png")
+OUT = os.path.join(ROOT, "docs", "network_architecture.png")
 
 INK = "#1b2631"
 BLUE, GREEN, ORANGE, GREY = "#2874a6", "#1e8449", "#b9770e", "#5d6d7e"

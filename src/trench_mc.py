@@ -9,6 +9,8 @@ Notation follows Cremers, Puurunen & Dendooven, Appl. Phys. Rev. 6, 021302 (2019
     s0  = initial sticking probability on the bare surface
     s(theta) = s0 * (1 - theta)**n_steric
 """
+import os
+
 import numpy as np
 from numba import njit
 
@@ -220,6 +222,8 @@ if __name__ == "__main__":
 
     fig.suptitle("What the feature-scale MC simulator does — AR 20 trench",
                  fontsize=15.5, y=0.965)
-    fig.savefig("trench_mc_explained.png", dpi=155, bbox_inches="tight",
-                facecolor="white")
+    out = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), "docs", "trench_mc_explained.png")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    fig.savefig(out, dpi=155, bbox_inches="tight", facecolor="white")
     print("saved")
