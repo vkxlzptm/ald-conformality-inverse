@@ -47,6 +47,16 @@ R_GAS = 8.314462618e-3                            # kJ/(mol K)
 
 K_CKPT = 6
 PI2_CKPT = np.geomspace(0.8, 30.0, K_CKPT)        # dose per surface site
+# The checkpoint grid is shifted by a random log-offset for every parameter draw.
+# Without it the six Pi2 values are a fixed set, and since
+#     dose = Pi2 * n_sites * pi * AR * SPB_SCALE ,
+# dividing the known dose by those six values recovers the site density before
+# the profile is even read -- measured: 1-2 candidates survive the prior and the
+# right one is exact.  A real process picks the dose independently of the site
+# density it is trying to measure, so that shortcut must not exist here.
+# The offset spans one full grid spacing (log 30/0.8 over 5 steps = 0.725), which
+# smears the grid into a continuum.
+PI2_JITTER = 0.3625
 
 PRIOR = dict(
     AR=(10.0, 50.0),          # log-uniform,  H / D
@@ -63,10 +73,6 @@ NOISE_TARGET = 1200.0        # pseudo-particle weight cap, see mc_noise below
 #   above it runs 2 % (AR 50) to 4 % (AR 10).  It is stored per example so that
 #   training adds only the extra noise needed to reach the measurement level.
 STOP_THETA = 0.999
-
-# Printed estimate only.  Measured 1.4 s on dhl-desktop (x86, 6 cores) and 3.7 s
-# in the aarch64 dev container -- a 2.6x spread, so re-measure before trusting it.
-SEC_PER_EXAMPLE = 1.4
 
 
 # ---------------------------------------------------------------------- sampling
@@ -93,15 +99,15 @@ def s0_of_T(s0_ref, Ea, T):
 
 
 # ------------------------------------------------------------------- one example
-def simulate_draw(p, seed):
+def simulate_draw(p, seed, pi2):
     """Run the three temperatures and return (K, 3, NBIN) clean profiles."""
     AR = p["AR"]
     spb = p["n_sites"] * np.pi * AR / NBIN * SPB_SCALE
     weight = max(1.0, spb / NOISE_TARGET)
-    ckpt = np.unique((PI2_CKPT * spb * NBIN / weight).astype(np.int64))
+    ckpt = np.unique((pi2 * spb * NBIN / weight).astype(np.int64))
     budget = int(ckpt[-1])
 
-    out = np.zeros((K_CKPT, 3, NBIN), dtype=np.float32)
+    out = np.zeros((len(pi2), 3, NBIN), dtype=np.float32)
     s0s = np.zeros(3)
     for j, T in enumerate(TEMPS_K):
         s0 = float(s0_of_T(p["s0_ref"], p["Ea"], T))
@@ -119,11 +125,12 @@ def build_shard(shard_id):
     for i in range(DRAWS_PER_SHARD):
         p = draw_params(rng)
         seed = shard_id * 100_003 + i * 3        # 3 consecutive seeds per draw
-        prof, spb, weight, s0s = simulate_draw(p, seed)
-        for k in range(K_CKPT):
+        pi2 = PI2_CKPT * np.exp(rng.uniform(-PI2_JITTER, PI2_JITTER))
+        prof, spb, weight, s0s = simulate_draw(p, seed, pi2)
+        for k in range(len(pi2)):
             Y.append(prof[k])
             # known conditions: AR, dose per site, the three temperatures
-            C.append([p["AR"], PI2_CKPT[k], *TEMPS_K])
+            C.append([p["AR"], pi2[k], *TEMPS_K])
             # inference targets (+ the realised s0(T) kept for diagnostics)
             P.append([p["s0_ref"], p["Ea"], p["n_steric"], p["reemit"],
                       p["n_sites"], *s0s])
@@ -183,8 +190,7 @@ def main():
     print(f"shards   : {len(ids)} requested, {len(todo)} missing")
     print(f"examples : {n_ex:,} to generate "
           f"({len(ids)*DRAWS_PER_SHARD*K_CKPT:,} in the full set)")
-    print(f"estimate : {n_ex*SEC_PER_EXAMPLE/3600:.1f} core-hours at "
-          f"{SEC_PER_EXAMPLE} s per example -- RE-MEASURE ON YOUR MACHINE")
+    print(f"estimate : {n_ex*15.0/3600:.1f} core-hours at ~15 s per example")
     if args.dry_run or not todo:
         return
 

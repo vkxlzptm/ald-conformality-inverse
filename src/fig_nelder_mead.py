@@ -29,7 +29,7 @@ from cyl_run import run_ckpt
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 CACHE = os.path.join(ROOT, "results", "nm_fig_data.npz")
-OUTPNG = os.path.join(ROOT, "figures", "nelder_mead_explained.png")
+OUTPNG = os.path.join(ROOT, "docs", "nelder_mead_explained.png")
 
 TRUTH = dict(AR=15.0, s0_ref=0.05, Ea=30.0, n_steric=2.0, reemit=0.97,
              n_sites=4.0)

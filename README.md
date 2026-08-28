@@ -159,6 +159,35 @@ Knudsen 확산계수 D_K ∝ W·v̄, 단위 길이당 소모율 k ∝ s₀·v̄/
 다만 dose 와 n_sites 는 prior 에서 상관되어 있다 (dose = Π₂ · n_s · const, Π₂ 는 log-uniform).
 이건 버그가 아니라 prior 구조이므로 발표 시 명시할 것.
 
+## 4-g. 데이터셋이 정답을 흘리고 있었다 (실측 → 수정)
+
+첫 학습이 **너무 잘 나왔다**. 시험 shard 30개에서 s₀ 중앙오차 6.5 %, 사이트밀도 4.4 %,
+보정 곡선은 거의 완벽. 같은 벤치마크에서 최소제곱 baseline 은 s₀ 133.9 %, 사이트밀도 39.7 %.
+20배 차이는 의심할 근거다. 파보니 누설이었다.
+
+**메커니즘**: 생성기가 dose 를 `dose = Π₂ · n_sites · π·AR·SPB_SCALE` 로 만드는데
+Π₂ 가 **고정된 6개 값**이었다. 조건으로 주는 dose 를 그 6개로 나눠보면 사이트밀도 후보가 나온다.
+
+측정 (`src/leak_test.py`, 실제 shard):
+
+| | 지터 전 | 지터 후 |
+|---|---|---|
+| prior 안에 들어오는 Π₂ 후보 수 | 1~2개 (83 % 가 2개) | 동일 |
+| 후보 중 정답을 골랐을 때 n_sites 재현 오차 | **0.00 %** | 12.2 % |
+
+즉 프로파일은 "둘 중 뭐냐"만 고르면 됐고, 사이트밀도는 사실상 **주어진 값**이었다.
+실제 공정은 dose 를 사이트밀도와 무관하게 정하므로 이 지름길은 있어서는 안 된다.
+
+**수정**: draw 마다 체크포인트 격자에 log 오프셋 `U(±0.3625)` 를 곱한다 (`PI2_JITTER`).
+격자 간격이 log 0.725 이므로 오프셋이 격자를 **틈 없이 메워** Π₂ 가 전 구간에서 연속·log-균일이 된다.
+→ dose 와 AR 을 알아도 n_sites 는 prior 이상으로 좁혀지지 않는다.
+
+**데이터셋은 재생성해야 한다.** 이전 것은 `results/dataset_v1_leaky` 로 보관.
+재생성 후 `python src/leak_test.py` 의 2번(조건만으로 kNN)이 실제 검증 게이트다.
+
+> **교훈**: 결과가 기대보다 좋으면 먼저 누설을 의심하라. 이 프로젝트에서 두 번 다 그랬다 —
+> §4-f 는 오차 방향이 일관돼서, §4-g 는 정확도가 지나쳐서 잡혔다.
+
 ## 4-b. 무차원화와 정규화 (NN 학습 전 필수)
 
 **(1) 무차원군으로 묶기**
@@ -343,23 +372,34 @@ kMC 를 넣는 이유로 제시됐던 "T 를 입력으로 쓰려면 필수"는 *
 ```
 ald-conformality-inverse/
 ├── README.md          이 문서
-├── docs/              설계 문서 · 워크플로우 다이어그램 · HANDOVER
-├── src/               시뮬레이터 · 검증 · 데이터 생성 · 그림 생성 코드
-├── figures/           생성된 그림
-└── results/dataset/   shard_XXXX.npz (git 제외)
+├── docs/              HANDOVER · **설명용 그림** (워크플로우, 신경망 구조, 원리 설명)
+├── src/               코드 전부
+├── figures/           **측정 결과 그림** (검증, 스케일링, 평가)
+└── results/           dataset/ · model/ · baseline.json  (git 제외)
 ```
 
 ### src/
-**주 경로 (원통)**
+**시뮬레이터 · 데이터**
 - `cyl_mc.py` — 3D 축대칭 원통 탄도 MC. 투과확률 · 반응 프로파일
 - `cyl_run.py` — dose 체크포인트 커널 (한 번 실행에 스냅샷 여러 개)
 - `clausing_ref.py` — Clausing 적분방정식의 결정론적 수치해 (MC 미사용, 검증 기준)
-- `generate_dataset.py` — 학습 데이터 생성. shard · 이어하기 · 온도 3점
-- `fig_geometry_validation.py` — 기하 결정 근거 그림
+- `generate_dataset.py` — 학습 데이터 생성. shard · 이어하기 · 온도 3점 · Π₂ 지터
+
+**학습 · 평가**
+- `data.py` — 로딩, shard 단위 분할, 측정 모델, 목표 변환
+- `model.py` — 1D CNN + mixture density head
+- `train.py` — 학습 루프. `--device`, `--limit-shards`
+- `evaluate.py` — 정확도 · **보정** · baseline 정면 비교
+- `baseline_ls.py` — 최소제곱 baseline (Nelder-Mead, multi-start, CRN)
+- `leak_test.py` — 조건만으로 파라미터가 새는지 검사
+
+**그림**
+- `fig_workflow.py`, `fig_architecture.py` → `docs/` (설명용)
+- `fig_geometry_validation.py`, `fig_ar_scaling.py`, `pi_collapse.py` → `figures/` (결과)
+- `fig_nelder_mead.py` → `docs/` (설명용, 지형은 `results/` 에 캐시)
 
 **비교 연구용 (2D slit, 유지)**
 - `trench_mc.py` — 2D trench 탄도 MC. 단독 실행 시 설명 그림 생성
 - `ar_scaling.py` — 2D 투과확률, 포화 dose vs AR
-- `fig_ar_scaling.py`, `pi_collapse.py` — 2D 그림 생성
 
 그림 텍스트는 영어, 축 라벨은 문장형 대문자 시작으로 통일한다.
