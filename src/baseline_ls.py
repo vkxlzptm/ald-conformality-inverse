@@ -12,6 +12,7 @@ simulator calls, and wall-clock time.
     python src/baseline_ls.py --cases 4 --budget 400 --starts 2
 """
 import argparse
+import os
 import time
 
 import numpy as np
@@ -26,6 +27,7 @@ OBS_CKPT = 3               # which dose checkpoint is "the measurement"
 MEAS_NOISE = 0.03          # relative measurement noise, 1 sigma
 N_MASKED = 10              # depth bins unavailable in the measurement
 CRN_SEED = 4242            # common random numbers: fixed across all evaluations
+SIMPLEX_STEP = 2.0         # initial simplex edge, in logit units (box spans ~ +/-9)
 
 # search box = the generating prior, widened slightly so the truth is interior
 BOX = dict(s0_ref=(0.002, 0.8), Ea=(0.0, 80.0), n_steric=(0.0, 5.0),
@@ -107,12 +109,20 @@ def fit(obs, mask, AR, pi2, budget, starts, method, verbose=False):
 
     rng = np.random.default_rng(31337)
     best, best_f = None, np.inf
+    n = len(NAMES)
     t0 = time.time()
     for k in range(starts):
-        x0 = rng.normal(0.0, 1.0, len(NAMES)) if k else np.zeros(len(NAMES))
+        x0 = rng.normal(0.0, 1.2, n) if k else np.zeros(n)
+        # Explicit initial simplex.  scipy's default perturbs each coordinate by
+        # 5 % and falls back to 0.00025 wherever x0 is exactly zero, which makes
+        # the starting simplex degenerate: the search then stalls after ~150
+        # calls without having moved.  Measured on this problem.
+        sim0 = np.vstack([x0] + [x0 + SIMPLEX_STEP * np.eye(n)[i]
+                                 for i in range(n)])
         r = minimize(obj, x0, method=method,
                      options=dict(maxfev=budget // starts, xatol=1e-3,
-                                  fatol=1e-6, adaptive=True))
+                                  fatol=1e-6, adaptive=True,
+                                  initial_simplex=sim0))
         if verbose:
             print(f"      start {k}: sse {r.fun:.4f} after {calls['n']} calls",
                   flush=True)
@@ -131,38 +141,78 @@ def rel_err(est, truth):
     return out
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--cases", type=int, default=4)
-    ap.add_argument("--budget", type=int, default=400,
-                    help="simulator calls per case, across all starts")
-    ap.add_argument("--starts", type=int, default=2)
-    ap.add_argument("--method", default="Nelder-Mead")
-    ap.add_argument("--verbose", action="store_true")
-    a = ap.parse_args()
+_JOB = {}
 
-    # warm the JIT so it is not charged to the first case
+
+def _worker_init(budget, starts, method):
+    """Runs once per worker process.
+
+    macOS (and Windows) default to the 'spawn' start method, so a worker is a
+    fresh interpreter: globals set in the parent do NOT carry over, and neither
+    does a JIT warm-up done there.  Both have to happen here instead.
+    """
+    _JOB.update(budget=budget, starts=starts, method=method)
     run_ckpt(10.0, 0.05, 1.0, 1.0, 400.0, 1.0,
              np.array([50], dtype=np.int64), 50, 0.999, 1)
 
+
+def solve_case(i):
+    """One benchmark case start to finish. Safe to run in a worker process."""
+    truth, obs, mask, AR, pi2 = make_case(i)
+    est, f, n, dt = fit(obs, mask, AR, pi2, _JOB["budget"], _JOB["starts"],
+                        _JOB["method"], False)
+    return i, truth, est, f, n, dt
+
+
+def _report(i, truth, est, f, n, dt):
+    pi1 = truth["AR"] * np.sqrt(truth["s0_ref"])
+    e = rel_err(est, truth)
+    print(f"case {i}:  AR {truth['AR']:5.1f}  Pi1 {pi1:5.2f}   "
+          f"-> {n} calls, {dt/60:.1f} min, sse {f:.4f}")
+    print("          " + "  ".join(
+        f"{k} {est[k]:.3f}/{truth[k]:.3f}" for k in NAMES))
+    print("          err: " + "  ".join(
+        f"{k} {e[k]*100:.0f}%" if k != "Ea" else f"Ea {e[k]:.1f}kJ"
+        for k in NAMES), flush=True)
+    return e
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--cases", type=int, default=4)
+    ap.add_argument("--budget", type=int, default=1200,
+                    help="simulator calls per case, across all starts")
+    ap.add_argument("--starts", type=int, default=2)
+    ap.add_argument("--method", default="Nelder-Mead")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="cases in parallel; 0 = cpu_count() - 2")
+    ap.add_argument("--verbose", action="store_true")
+    a = ap.parse_args()
+
+    _JOB.update(budget=a.budget, starts=a.starts, method=a.method)
+
+    # warm the JIT in the parent so forked workers inherit the compiled code
+    run_ckpt(10.0, 0.05, 1.0, 1.0, 400.0, 1.0,
+             np.array([50], dtype=np.int64), 50, 0.999, 1)
+
+    workers = min(a.workers or max(1, (os.cpu_count() or 2) - 2), a.cases)
     print(f"method {a.method}   budget {a.budget} calls/case   "
-          f"{a.starts} starts   benchmark shard {BENCH_SHARD}\n")
-    rows = []
-    for i in range(a.cases):
-        truth, obs, mask, AR, pi2 = make_case(i)
-        pi1 = AR * np.sqrt(truth["s0_ref"])
-        print(f"case {i}:  AR {AR:5.1f}  Pi1 {pi1:5.2f}  "
-              f"s0_ref {truth['s0_ref']:.4f}  Ea {truth['Ea']:5.1f}", flush=True)
-        est, f, n, dt = fit(obs, mask, AR, pi2, a.budget, a.starts, a.method,
-                            a.verbose)
-        e = rel_err(est, truth)
-        rows.append((n, dt, e))
-        print(f"          -> {n} calls, {dt/60:.1f} min, sse {f:.4f}")
-        print("          " + "  ".join(
-            f"{k} {est[k]:.3f}/{truth[k]:.3f}" for k in NAMES))
-        print("          err: " + "  ".join(
-            f"{k} {e[k]*100:.0f}%" if k != "Ea" else f"Ea {e[k]:.1f}kJ"
-            for k in NAMES), flush=True)
+          f"{a.starts} starts   benchmark shard {BENCH_SHARD}   "
+          f"{workers} workers\n", flush=True)
+
+    rows, t_wall = [], time.time()
+    if workers == 1:
+        for i in range(a.cases):
+            r = solve_case(i)
+            rows.append((r[4], r[5], _report(*r)))
+    else:
+        import multiprocessing as mp
+        with mp.Pool(workers, initializer=_worker_init,
+                     initargs=(a.budget, a.starts, a.method)) as pool:
+            for r in pool.imap_unordered(solve_case, range(a.cases)):
+                rows.append((r[4], r[5], _report(*r)))
+    print(f"\n  total wall clock: {(time.time()-t_wall)/60:.1f} min "
+          f"({workers} cases at a time)")
 
     print("\n=== baseline summary ===")
     print(f"  simulator calls per case : {np.mean([r[0] for r in rows]):.0f}")

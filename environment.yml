@@ -10,5 +10,4 @@ dependencies:
   - matplotlib
   - scipy
   - tqdm
-  # 학습 단계에서 추가 (지금은 불필요)
-  # - pytorch
+  - pytorch          # CPU/MPS. Apple Silicon 은 conda-forge 빌드로 MPS 가 붙는다
