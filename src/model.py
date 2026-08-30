@@ -15,7 +15,7 @@ LOG2PI = math.log(2.0 * math.pi)
 
 
 class ProfileMDN(nn.Module):
-    def __init__(self, in_ch=7, n_cond=2, n_out=5, n_mix=8, width=96):
+    def __init__(self, in_ch=3, n_cond=1, n_out=4, n_mix=8, width=96):
         super().__init__()
         w = width
 

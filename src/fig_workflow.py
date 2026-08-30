@@ -65,9 +65,8 @@ box(ax, 0.295, yb, 0.235, IH, BLUE, "Ballistic MC simulator",
     "self-limiting surface reaction")
 box(ax, 0.565, yb, 0.185, IH, BLUE, "Profiles",
     "3 temperatures\n× 64 depth bins\none run, snapshotted\nat 6 dose levels")
-box(ax, 0.785, yb, 0.185, IH, BLUE, "108,000 examples",
-    "600 shards\nre-running = resuming\ndose per site jittered\nso it cannot leak\n"
-    "the site density")
+box(ax, 0.785, yb, 0.185, IH, BLUE, "324,000 wafers",
+    "108,000 draws,\neach split into its\nthree temperatures\n600 shards,\nre-running = resuming")
 for x in (0.262, 0.532, 0.752):
     arr(ax, x, yb + IH / 2, x + 0.030, yb + IH / 2, BLUE)
 ax.text(0.5, Y - 0.014,
@@ -85,24 +84,22 @@ box(ax, 0.325, yb, 0.215, IH, GREEN, "Measurement model",
     "applied fresh every epoch\nnoise topped up to ±3 %\n10 of 64 bins masked\n"
     "(doubles as augmentation)")
 box(ax, 0.575, yb, 0.395, IH, GREEN, "1D CNN  →  mixture-density head",
-    "in:  7 × 64 profile channels,  log AR,  log absolute dose\n"
-    "out: $(s_{0,ref},\ E_a,\ n,\ $re-emission$,\ $site density$)$, as a posterior\n"
-    "$s(T)$ is the analytic Arrhenius form, not learned per temperature\n"
-    "$\Pi_2$ is never an input — its denominator is the site density")
+    "in:   3 × 64 profile channels  and  log AR.  Nothing else.\n"
+    "out:  $(s_0,\ n,\ $re-emission$,\ \Pi_2)$, as a posterior\n"
+    "every input and output is dimensionless\n"
+    "the dose is not an input: the profile sees it only through $\Pi_2$")
 for x in (0.292, 0.542):
     arr(ax, x, yb + IH / 2, x + 0.030, yb + IH / 2, GREEN)
 
 # ------------------------------------------------------------------ band 3
 Y = 0.282
-band(ax, Y, BH, PURPLE, "3", "Inference", "online  ·  0.13 ms per measurement")
+band(ax, Y, BH, PURPLE, "3", "Inference", "online  ·  0.13 ms per wafer")
 yb = Y + PAD
-box(ax, 0.075, yb, 0.205, IH, PURPLE, "One measurement",
-    "TEM cross-sections\nat three temperatures\nthickness normalised by\n"
-    "the flat-top thickness")
+box(ax, 0.075, yb, 0.205, IH, PURPLE, "One wafer",
+    "one TEM cross-section\nat one temperature\nthickness normalised by\nthe flat-top thickness")
 box(ax, 0.315, yb, 0.185, IH, PURPLE, "Single forward pass")
-box(ax, 0.535, yb, 0.215, IH, PURPLE, "Posterior over parameters",
-    "not a point estimate —\nits width says what the\ndata cannot pin down\n"
-    "calibration is verified,\nnot assumed")
+box(ax, 0.535, yb, 0.215, IH, PURPLE, "Units restored outside",
+    "$n_s = N_{dose}/(4\,AR\,\Pi_2)$\n$E_a$ from ln $s_0$ vs $1/T$\nacross a temperature split\nclosed form — no simulator")
 box(ax, 0.785, yb, 0.185, IH, PURPLE, "Process prescription",
     "dose required at a\ndifferent aspect ratio\nobserve AR 20\n→ prescribe for AR 50")
 for x in (0.282, 0.502, 0.752):

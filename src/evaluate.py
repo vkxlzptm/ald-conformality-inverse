@@ -25,14 +25,15 @@ from model import ProfileMDN, mdn_nll, mdn_sample
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 LEVELS = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95])
-PRETTY = {"s0_ref": "$s_0$ at $T_{ref}$", "Ea": "$E_a$", "n_steric": "n",
-          "reemit": "re-emission", "n_sites": "site density"}
+PRETTY = {"s0": "$s_0$", "n_steric": "n", "reemit": "re-emission",
+          "pi2": r"$\Pi_2$ (dose per site)"}
 
 
 def load_model(path, dev):
     ck = torch.load(path, map_location=dev, weights_only=False)
     a = ck["args"]
-    net = ProfileMDN(n_mix=a["mix"], width=a["width"]).to(dev)
+    net = ProfileMDN(n_out=len(ck["targets"]), n_mix=a["mix"],
+                     width=a["width"]).to(dev)
     net.load_state_dict(ck["state"])
     net.eval()
     return net, np.asarray(ck["zmu"]), np.asarray(ck["zsd"])
@@ -80,7 +81,7 @@ def main():
     d = D.load(a.data, te_ids)
     rng = np.random.default_rng(a.seed)
     obs, mask = D.degrade(d["y"], d["mc_noise"], rng)
-    x, c = D.features(obs, mask, d["AR"], d["dose"])
+    x, c = D.features(obs, mask, d["AR"])
     z_true = (D.targets_to_z(d["p"]) - zmu) / zsd
 
     t0 = time.time()
@@ -98,13 +99,15 @@ def main():
     print(f"test set: {len(x):,} examples from {len(te_ids)} shards")
     print(f"inference: {t_inf*1e3:.3f} ms per measurement on {dev}")
     print(f"mixture NLL (normalized space): {nll:.4f}\n")
+    print("  targets are dimensionless; the site density follows from")
+    print("  n_s = N_dose / (4 AR Pi2) with the measured dose.\n")
     print("  parameter        median error   posterior width (68 %)")
     lo = np.quantile(samp, 0.16, axis=1)
     hi = np.quantile(samp, 0.84, axis=1)
     for j, name in enumerate(D.TARGETS):
-        if name == "Ea":
+        if name == "reemit":                 # sits near 1; relative error misleads
             err = np.abs(est[:, j] - truth[:, j])
-            unit, val = "kJ/mol", np.median(err)
+            unit, val = "abs", np.median(err)
         else:
             err = np.abs(est[:, j] - truth[:, j]) / np.maximum(truth[:, j], 1e-9)
             unit, val = "%", np.median(err) * 100
@@ -124,9 +127,9 @@ def main():
         import baseline_ls as B
         xs, cs, tr = [], [], []
         for i in range(a.cases):
-            t, o, m, AR, dose = B.make_case(i)
-            xi, ci = D.features(o[None].astype(np.float32), m[None].astype(np.float32),
-                                np.array([AR]), np.array([dose]))
+            t, o, m, AR, _T = B.make_case(i)
+            xi, ci = D.features(o[None].astype(np.float32),
+                                m[None].astype(np.float32), np.array([AR]))
             xs.append(xi); cs.append(ci)
             tr.append([t[k] for k in D.TARGETS])
         xb = np.concatenate(xs); cb = np.concatenate(cs)
@@ -154,7 +157,7 @@ def main():
                  fontsize=12)
 
     ax = axes[1]
-    j = D.TARGETS.index("s0_ref")
+    j = D.TARGETS.index("s0")
     ax.errorbar(truth[:, j], est[:, j],
                 yerr=[est[:, j] - D.z_to_targets(lo * zsd + zmu)[:, j],
                       D.z_to_targets(hi * zsd + zmu)[:, j] - est[:, j]],
@@ -162,7 +165,7 @@ def main():
     lim = [truth[:, j].min() * 0.7, truth[:, j].max() * 1.4]
     ax.plot(lim, lim, "k--", lw=1.3)
     ax.set_xscale("log"); ax.set_yscale("log")
-    ax.set_xlabel("True $s_0$ at $T_{ref}$", fontsize=12)
+    ax.set_xlabel("True $s_0$", fontsize=12)
     ax.set_ylabel("Inferred $s_0$, with 68 % interval", fontsize=12)
     ax.grid(alpha=0.3, which="both")
     ax.set_title("Recovery of the sticking probability", fontsize=12)
@@ -178,22 +181,23 @@ def main():
         netv = []
         for j, name in enumerate(D.TARGETS):
             e = np.abs(bench["net"][:, j] - bench["truth"][:, j])
-            netv.append(np.median(e if name == "Ea"
+            netv.append(np.median(e * 100 if name == "reemit"
                                   else e / np.maximum(bench["truth"][:, j], 1e-9)
                                   * 100))
         ax.bar(idx - w / 2, netv, w, label="Amortized network", color="#2874a6")
         if base:
             bv = []
             for name in D.TARGETS:
-                e = [abs(cc["est"][name] - cc["truth"][name]) for cc in base["cases"]]
+                e = [abs(cc["est"][name] - cc["truth"][name]) * 100
+                     for cc in base["cases"]]
                 r = [abs(cc["est"][name] - cc["truth"][name]) /
                      max(abs(cc["truth"][name]), 1e-9) * 100
                      for cc in base["cases"]]
-                bv.append(np.median(e if name == "Ea" else r))
+                bv.append(np.median(e if name == "reemit" else r))
             ax.bar(idx + w / 2, bv, w, label="Least squares", color="#c0392b")
         ax.set_xticks(idx)
         ax.set_xticklabels([PRETTY[n] for n in D.TARGETS], fontsize=9)
-        ax.set_ylabel("Median error  (% , or kJ/mol for $E_a$)", fontsize=12)
+        ax.set_ylabel("Median error  (%; re-emission in points)", fontsize=12)
         ax.grid(alpha=0.3, axis="y"); ax.legend(fontsize=10)
         ax.set_title("Same benchmark cases, head to head", fontsize=12)
 

@@ -35,7 +35,7 @@ def pick_device(name):
 class Split:
     def __init__(self, root, ids, zmu=None, zsd=None):
         d = D.load(root, ids)
-        self.y, self.AR, self.dose = d["y"], d["AR"], d["dose"]
+        self.y, self.AR = d["y"], d["AR"]
         self.mc, self.shard = d["mc_noise"], d["shard"]
         self.p = d["p"]
         z = D.targets_to_z(self.p)
@@ -47,7 +47,7 @@ class Split:
 
     def batches(self, bs, rng, shuffle=True):
         obs, mask = D.degrade(self.y, self.mc, rng)
-        x, c = D.features(obs, mask, self.AR, self.dose)
+        x, c = D.features(obs, mask, self.AR)
         order = rng.permutation(self.n) if shuffle else np.arange(self.n)
         for i in range(0, self.n, bs):
             j = order[i:i + bs]
@@ -83,6 +83,7 @@ def main():
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--mix", type=int, default=8)
+    ap.add_argument("--out-dim", type=int, default=len(D.TARGETS))
     ap.add_argument("--width", type=int, default=96)
     ap.add_argument("--device", default="auto")
     ap.add_argument("--limit-shards", type=int, default=0,
@@ -107,7 +108,8 @@ def main():
           f"test {len(te_ids)} shards   (load {time.time()-t0:.1f} s)",
           flush=True)
 
-    net = ProfileMDN(n_mix=a.mix, width=a.width).to(dev)
+    net = ProfileMDN(n_out=len(D.TARGETS), n_mix=a.mix,
+                     width=a.width).to(dev)
     print(f"parameters: {sum(p.numel() for p in net.parameters()):,}",
           flush=True)
     opt = torch.optim.AdamW(net.parameters(), lr=a.lr, weight_decay=1e-4)

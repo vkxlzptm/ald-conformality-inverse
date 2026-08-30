@@ -1,12 +1,23 @@
 """Dataset loading, the observation model, and target transforms.
 
-Split is by SHARD, never by example: the K dose checkpoints inside one parameter
-draw share identical ground truth, so an example-level random split would put the
-same answer in train and test and inflate every score.
+Everything the network sees and everything it predicts is dimensionless, so the
+pipeline carries no dependence on the simulator's unit conventions.
 
-The known process condition is the ABSOLUTE dose, not Pi2 -- see README section
-4-f.  Shards store Pi2 and sites_per_bin, from which the absolute molecule count
-is recovered as  pi2 * sites_per_bin * NBIN.
+    known    :  theta(z) normalised by the flat-top thickness,  AR = H/D
+    inferred :  s0 (at the wafer's temperature), n, re-emission survival, Pi2
+    outside  :  n_s   = N_dose / (4 AR Pi2)        with the measured dose
+                Ea    = -k_B * slope of ln s0 vs 1/T   across a temperature split
+
+Why Pi2 is an output and not an input: the profile depends on dose and site
+count only through their ratio, and that ratio's denominator is the site density
+we are trying to measure.  Feeding it in is circular -- measured in README 4-f.
+
+Why the absolute dose is not an input at all: scaling dose and site count
+together leaves the profile unchanged, so the dose carries no information the
+profile does not already contain.
+
+Split is by SHARD, never by example: the dose checkpoints and the three
+temperatures of one draw share parameters, so an example-level split leaks.
 """
 import glob
 import os
@@ -14,10 +25,14 @@ import os
 import numpy as np
 
 NBIN = 64
-TARGETS = ["s0_ref", "Ea", "n_steric", "reemit", "n_sites"]
-LOG_TARGETS = {"s0_ref", "n_sites"}
-MEAS_NOISE = 0.03          # measurement noise the network is trained to expect
-N_MASKED = 10              # depth bins missing from a measurement
+K_TEMP = 3
+KB_EV = 8.617333262e-5          # eV / K
+KJMOL_PER_EV = 96.48533212
+
+TARGETS = ["s0", "n_steric", "reemit", "pi2"]
+LOG_TARGETS = {"s0", "pi2"}
+MEAS_NOISE = 0.03               # measurement noise the network is trained for
+N_MASKED = 10                   # depth bins missing from a measurement
 
 
 def shard_id(path):
@@ -25,26 +40,44 @@ def shard_id(path):
 
 
 def load(root, ids=None):
-    """Load shards into memory. Returns dict of arrays."""
+    """Load shards and expand each example into its three temperatures.
+
+    One row of the returned arrays is one wafer: a single profile measured at a
+    single temperature.
+    """
     files = sorted(glob.glob(os.path.join(root, "shard_*.npz")))
     if ids is not None:
-        ids = set(ids)
-        files = [f for f in files if shard_id(f) in ids]
+        keep = set(ids)
+        files = [f for f in files if shard_id(f) in keep]
     if not files:
         raise FileNotFoundError(f"no shards under {root}")
-    Y, C, P, Q, S = [], [], [], [], []
+
+    Y, AR, T, MC, P, EA, SH, GR = [], [], [], [], [], [], [], []
     for f in files:
         d = np.load(f)
-        n = d["y"].shape[0]
-        Y.append(d["y"]); C.append(d["c"]); P.append(d["p"]); Q.append(d["q"])
-        S.append(np.full(n, shard_id(f), np.int32))
-    Y = np.concatenate(Y); C = np.concatenate(C)
-    P = np.concatenate(P); Q = np.concatenate(Q); S = np.concatenate(S)
+        y, c, p, q = d["y"], d["c"], d["p"], d["q"]
+        n, k = y.shape[0], len(d["pi2_ckpt"])
+        if n % k:
+            raise ValueError(f"{f}: {n} examples is not a multiple of {k}")
+        sid = shard_id(f)
+        temps = d["temps_K"]
+        group = sid * 1_000_000 + np.arange(n)      # unique per (shard, example)
+        for j in range(K_TEMP):
+            Y.append(y[:, j, :])
+            AR.append(c[:, 0])
+            T.append(np.full(n, temps[j]))
+            MC.append(q[:, 2])
+            # target: s0 at THIS temperature, steric, re-emission, Pi2
+            P.append(np.stack([p[:, 5 + j], p[:, 2], p[:, 3], c[:, 1]], 1))
+            EA.append(p[:, 1] / KJMOL_PER_EV)       # truth, eV, for the Arrhenius check
+            SH.append(np.full(n, sid, np.int32))
+            GR.append(group)
 
-    pi2, spb = C[:, 1], Q[:, 0]
-    dose = pi2 * spb * NBIN                       # absolute molecules entering
-    return dict(y=Y, AR=C[:, 0], dose=dose, mc_noise=Q[:, 2],
-                p=P[:, :5], shard=S)
+    cat = lambda a: np.concatenate(a)
+    return dict(y=cat(Y).astype(np.float32), AR=cat(AR).astype(np.float64),
+                T=cat(T).astype(np.float64), mc_noise=cat(MC).astype(np.float64),
+                p=cat(P).astype(np.float64), Ea_true=cat(EA).astype(np.float64),
+                shard=cat(SH), group=cat(GR))
 
 
 def split_ids(root, frac=(0.90, 0.05, 0.05)):
@@ -60,11 +93,10 @@ def split_ids(root, frac=(0.90, 0.05, 0.05)):
 
 # ------------------------------------------------------------ target transform
 def targets_to_z(p):
-    """Physical parameters -> the space the network regresses in."""
-    z = np.empty_like(p, dtype=np.float64)
+    z = np.array(p, dtype=np.float64, copy=True)
     for j, name in enumerate(TARGETS):
-        z[:, j] = np.log(np.maximum(p[:, j], 1e-8)) if name in LOG_TARGETS \
-            else p[:, j]
+        if name in LOG_TARGETS:
+            z[:, j] = np.log(np.maximum(p[:, j], 1e-8))
     return z
 
 
@@ -81,16 +113,14 @@ def degrade(y, mc_noise, rng, meas_noise=MEAS_NOISE, n_masked=N_MASKED):
     """Apply the measurement model to clean profiles.
 
     The stored profiles already carry Monte Carlo counting noise of size
-    `mc_noise`, so only the shortfall to the target measurement noise is added;
-    otherwise the training data would be noisier than the stated instrument.
+    `mc_noise`, so only the shortfall to the target measurement noise is added.
     Masking is redrawn every epoch, which doubles as augmentation.
 
-    y : (N, 3, NBIN) float32
-    returns obs (N, 3, NBIN), mask (N, NBIN) with 1 = measured
+    y : (N, NBIN);  returns obs (N, NBIN), mask (N, NBIN) with 1 = measured
     """
     n = y.shape[0]
-    extra = np.sqrt(np.maximum(meas_noise ** 2 - mc_noise ** 2, 0.0))
-    obs = y * (1.0 + extra[:, None, None] * rng.standard_normal(y.shape))
+    extra = np.sqrt(np.maximum(meas_noise ** 2 - np.asarray(mc_noise) ** 2, 0.0))
+    obs = y * (1.0 + extra[:, None] * rng.standard_normal(y.shape))
     np.clip(obs, 0.0, 1.0, out=obs)
 
     mask = np.ones((n, NBIN), np.float32)
@@ -99,19 +129,31 @@ def degrade(y, mc_noise, rng, meas_noise=MEAS_NOISE, n_masked=N_MASKED):
     return obs.astype(np.float32), mask
 
 
-def features(obs, mask, AR, dose):
-    """Assemble the network input.
+def features(obs, mask, AR):
+    """Network input.
 
-    channels 0-2  : coverage at the three temperatures, masked bins zeroed
-    channels 3-5  : log10 of the same, so information deep in the feature (where
-                    coverage is small) is not squashed against zero
-    channel  6    : the mask itself, so the network can tell a missing bin from
-                    a genuinely empty one
-    conditions    : log AR and log dose, the two things a process actually knows
+    channel 0 : coverage, masked bins zeroed
+    channel 1 : log10 of the same, so information deep in the feature -- where
+                coverage is small -- is not squashed against zero
+    channel 2 : the mask, so a missing bin is distinguishable from a bare one
+    condition : log AR, the only scalar a process actually fixes that the
+                profile does not already contain
     """
-    m = mask[:, None, :]
+    obs = np.atleast_2d(obs).astype(np.float32)
+    mask = np.atleast_2d(mask).astype(np.float32)
     lo = np.log10(np.maximum(obs, 1e-4))
-    x = np.concatenate([obs * m, (lo / 4.0 + 1.0) * m, mask[:, None, :]],
-                       axis=1).astype(np.float32)
-    c = np.stack([np.log(AR), np.log(dose)], axis=1).astype(np.float32)
-    return x, c
+    x = np.stack([obs * mask, (lo / 4.0 + 1.0) * mask, mask], axis=1)
+    c = np.log(np.asarray(AR, dtype=np.float64))[:, None].astype(np.float32)
+    return x.astype(np.float32), c
+
+
+# ------------------------------------------------------------- unit recovery
+def site_density(pi2, AR, dose_per_opening_area):
+    """n_s = N_dose / (4 AR Pi2).
+
+    The 4 AR is geometry, not a convention: the side wall of a cylindrical via
+    is 4 AR times its opening.  The hole diameter cancels, so only the aspect
+    ratio is needed -- no absolute dimension enters anywhere.
+    """
+    return np.asarray(dose_per_opening_area) / (4.0 * np.asarray(AR)
+                                                * np.asarray(pi2))
