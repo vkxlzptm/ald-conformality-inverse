@@ -18,8 +18,9 @@ The comparison is paired and like for like:
   * calibration compared as coverage of the truth, which is invariant under the
     monotone change of variable between the two parametrisations
 
-The mixture NLL is deliberately not compared: it is a density in whichever space
-the model was trained in, and those spaces differ by a Jacobian.
+The mixture NLL is not compared: each model is a density over its own z-scored
+space, and the map between those spaces mixes in AR, so the two numbers are not
+on the same scale.  Physical-unit errors and coverage are.
 
     python src/train.py --target-param pi1 --out results/model_pi1
     python src/ablation_param.py --models results/model/best.pt \\
@@ -77,6 +78,18 @@ def main():
     ap.add_argument("--json", default=os.path.join(ROOT, "results",
                                                    "ablation_param.json"))
     a = ap.parse_args()
+
+    # Fail before any work: loading the test set and running the first model's
+    # posterior takes minutes, and losing that to a typo in the second path is
+    # pure waste.
+    missing = [m for m in a.models if not os.path.exists(m)]
+    if missing:
+        raise SystemExit("no such checkpoint:\n  " + "\n  ".join(missing) +
+                         "\n\ntrain it first, e.g.\n"
+                         "  python src/train.py --target-param pi1 "
+                         "--out results/model_pi1 --epochs <same as the control>")
+    if len(a.models) != len(set(map(os.path.abspath, a.models))):
+        raise SystemExit("the same checkpoint was passed twice")
 
     dev = torch.device(a.device)
     _, _, te_ids = D.split_ids(a.data)
