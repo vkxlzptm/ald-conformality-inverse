@@ -38,7 +38,7 @@ class Split:
         self.y, self.AR = d["y"], d["AR"]
         self.mc, self.shard = d["mc_noise"], d["shard"]
         self.p = d["p"]
-        z = D.targets_to_z(self.p)
+        z = D.targets_to_z(self.p, self.AR)
         self.zmu = z.mean(0) if zmu is None else zmu
         # guard: a split with a single parameter draw has zero spread
         self.zsd = np.maximum(z.std(0), 1e-8) if zsd is None else zsd
@@ -85,6 +85,9 @@ def main():
     ap.add_argument("--mix", type=int, default=8)
     ap.add_argument("--out-dim", type=int, default=len(D.TARGETS))
     ap.add_argument("--width", type=int, default=96)
+    ap.add_argument("--target-param", default="s0", choices=["s0", "pi1"],
+                    help="express the first target as s0 or as Pi1 = AR sqrt(s0); "
+                         "see src/data.py and src/ablation_param.py")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--limit-shards", type=int, default=0,
                     help="use only the first N shards (quick timing probe)")
@@ -92,6 +95,7 @@ def main():
     a = ap.parse_args()
 
     torch.manual_seed(a.seed)
+    D.set_target_param(a.target_param)
     dev = pick_device(a.device)
     tr_ids, va_ids, te_ids = D.split_ids(a.data)
     if a.limit_shards:
@@ -103,6 +107,7 @@ def main():
     t0 = time.time()
     tr = Split(a.data, tr_ids)
     va = Split(a.data, va_ids, tr.zmu, tr.zsd)
+    print(f"first target: {a.target_param}", flush=True)
     print(f"device {dev}   train {tr.n:,} ex / {len(tr_ids)} shards   "
           f"val {va.n:,} ex / {len(va_ids)} shards   "
           f"test {len(te_ids)} shards   (load {time.time()-t0:.1f} s)",

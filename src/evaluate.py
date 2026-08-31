@@ -30,8 +30,14 @@ PRETTY = {"s0": "$s_0$", "n_steric": "n", "reemit": "re-emission",
 
 
 def load_model(path, dev):
+    """Load a checkpoint and put data.py into the parametrisation it was trained in.
+
+    Doing it here means evaluate, the Arrhenius fit and the transfer study all
+    pick it up from the file rather than from a flag someone has to remember.
+    """
     ck = torch.load(path, map_location=dev, weights_only=False)
     a = ck["args"]
+    D.set_target_param(a.get("target_param", "s0"))
     net = ProfileMDN(n_out=len(ck["targets"]), n_mix=a["mix"],
                      width=a["width"]).to(dev)
     net.load_state_dict(ck["state"])
@@ -82,7 +88,7 @@ def main():
     rng = np.random.default_rng(a.seed)
     obs, mask = D.degrade(d["y"], d["mc_noise"], rng)
     x, c = D.features(obs, mask, d["AR"])
-    z_true = (D.targets_to_z(d["p"]) - zmu) / zsd
+    z_true = (D.targets_to_z(d["p"], d["AR"]) - zmu) / zsd
 
     t0 = time.time()
     samp, heads = posterior(net, x, c, dev)
@@ -94,9 +100,12 @@ def main():
         for i, h in enumerate(heads)]))
 
     mean_z = samp.mean(1)
-    est = D.z_to_targets(mean_z * zsd + zmu)
+    est = D.z_to_targets(mean_z * zsd + zmu, d["AR"])
     truth = d["p"]
     print(f"test set: {len(x):,} examples from {len(te_ids)} shards")
+    print(f"first target trained as: {D.TARGET_PARAM}  "
+          f"(errors below are always in physical units, so they compare across "
+          f"parametrisations; the mixture NLL does not)")
     print(f"inference: {t_inf*1e3:.3f} ms per measurement on {dev}")
     print(f"mixture NLL (normalized space): {nll:.4f}\n")
     print("  targets are dimensionless; the site density follows from")
@@ -125,19 +134,19 @@ def main():
     bench = None
     if a.cases:
         import baseline_ls as B
-        xs, cs, tr = [], [], []
+        xs, cs, tr, ARs = [], [], [], []
         for i in range(a.cases):
             t, o, m, AR, _T = B.make_case(i)
             xi, ci = D.features(o[None].astype(np.float32),
                                 m[None].astype(np.float32), np.array([AR]))
-            xs.append(xi); cs.append(ci)
+            xs.append(xi); cs.append(ci); ARs.append(AR)
             tr.append([t[k] for k in D.TARGETS])
         xb = np.concatenate(xs); cb = np.concatenate(cs)
-        tr = np.asarray(tr)
+        tr = np.asarray(tr); ARs = np.asarray(ARs)
         t0 = time.time()
         sb, _ = posterior(net, xb, cb, dev)
         t_case = (time.time() - t0) / len(xb)
-        eb = D.z_to_targets(sb.mean(1) * zsd + zmu)
+        eb = D.z_to_targets(sb.mean(1) * zsd + zmu, ARs)
         bench = dict(truth=tr, net=eb, t=t_case)
         print(f"\n  benchmark cases: {a.cases}, "
               f"{t_case*1e3:.2f} ms each by the network")
@@ -159,8 +168,8 @@ def main():
     ax = axes[1]
     j = D.TARGETS.index("s0")
     ax.errorbar(truth[:, j], est[:, j],
-                yerr=[est[:, j] - D.z_to_targets(lo * zsd + zmu)[:, j],
-                      D.z_to_targets(hi * zsd + zmu)[:, j] - est[:, j]],
+                yerr=[est[:, j] - D.z_to_targets(lo * zsd + zmu, d["AR"])[:, j],
+                      D.z_to_targets(hi * zsd + zmu, d["AR"])[:, j] - est[:, j]],
                 fmt="o", ms=3, lw=0.7, alpha=0.35, color="#2874a6")
     lim = [truth[:, j].min() * 0.7, truth[:, j].max() * 1.4]
     ax.plot(lim, lim, "k--", lw=1.3)

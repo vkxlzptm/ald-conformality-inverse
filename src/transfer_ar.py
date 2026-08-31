@@ -24,6 +24,22 @@ exponent and the re-emission survival are surface properties and carry over
 unchanged.  That is the assumption this test is checking, and it is the reason a
 parameter inference is worth more than a curve fit to step coverage.
 
+Which cases.  The training prior lets the per-bounce loss (1 - re-emission)
+exceed s0, and in that regime a precursor molecule is destroyed before it reacts
+anywhere: measured, 44 % of prior draws have loss > s0 and no dose fills a deep
+feature.  That is outside any usable ALD window, so a transfer study there
+measures the prior, not the method.  Cases are therefore drawn from the
+ALD-like part of the prior, s0 > MIN_RATIO * (1 - re-emission), and the filter
+is printed with the results rather than hidden.  The network itself is trained
+on the full prior, which is the conservative direction.
+
+What is reported.  The headline is the whole dose -> bottom coverage curve at the
+new aspect ratio, band against truth: it is always defined.  The dose multiplier
+is derived from it for a coverage target, by default the coverage the source
+wafer already achieved, i.e. "hold this conformality at a deeper feature".  Where
+the target is out of reach inside the dose grid the case is reported as censored
+rather than silently clipped.
+
 Cost.  One MC run per posterior sample, run out along the dose axis and
 snapshotted, so a whole dose curve costs one run (src/cyl_run.py).  The particle
 budget of a run is about  Pi2_max * NBIN / noise^2, independent of the site
@@ -107,13 +123,34 @@ def _init(job):
 
 
 def _one(task):
-    """task = (case, sample index, s0, n_steric, reemit)."""
-    ci, si, s0, n_st, re = task
+    """task = (case, sample index, s0, n_steric, reemit, target)."""
+    ci, si, s0, n_st, re, target = task
     t0 = time.time()
-    q, bot, grid = required_pi2(s0, n_st, re, _JOB["AR_tgt"], _JOB["grid"],
-                                _JOB["weight"], _JOB["target"],
-                                seed=90_000 + ci * 10_007 + si)
+    q, bot, _ = required_pi2(s0, n_st, re, _JOB["AR_tgt"], _JOB["grid"],
+                             _JOB["weight"], target,
+                             seed=90_000 + ci * 10_007 + si)
     return ci, si, q, bot, time.time() - t0
+
+
+def pick_cases(n, AR_src, min_ratio, scan=400):
+    """Benchmark cases from the ALD-like part of the prior.
+
+    A draw with s0 <= min_ratio * (1 - reemit) loses precursor faster than it
+    consumes it, so no dose coats a deep feature and the transfer question has
+    no answer to check.  Indices come from the same reproducible stream as the
+    least-squares benchmark, so a case kept here is the same case there.
+    """
+    keep = []
+    for i in range(scan):
+        t, o, m, AR, T = B.make_case(i, AR=AR_src)
+        if t["s0"] > min_ratio * (1.0 - t["reemit"]):
+            keep.append((i, t, o, m, AR, T))
+            if len(keep) == n:
+                break
+    if len(keep) < n:
+        raise SystemExit(f"only {len(keep)} of {scan} draws pass the filter; "
+                         f"lower --min-ratio or raise the scan")
+    return keep
 
 
 # ------------------------------------------------------------------------ main
@@ -125,11 +162,16 @@ def main():
     ap.add_argument("--samples", type=int, default=100)
     ap.add_argument("--ar-src", type=float, default=20.0)
     ap.add_argument("--ar-tgt", type=float, default=50.0)
-    ap.add_argument("--target", type=float, default=0.90,
-                    help="bottom coverage the recipe has to reach")
-    ap.add_argument("--pi2-max", type=float, default=60.0)
+    ap.add_argument("--target", type=float, default=0.0,
+                    help="bottom coverage the recipe has to reach; 0 means "
+                         "match what the source wafer achieved")
+    ap.add_argument("--min-ratio", type=float, default=3.0,
+                    help="keep cases with s0 > min_ratio * (1 - reemit); the "
+                         "ALD-like part of the prior, see the module docstring")
+    ap.add_argument("--pi2-max", type=float, default=600.0,
+                    help="top of the dose grid; the required dose at a\n                          higher AR runs well past the training prior")
     ap.add_argument("--pi2-min", type=float, default=0.5)
-    ap.add_argument("--grid", type=int, default=48)
+    ap.add_argument("--grid", type=int, default=60)
     ap.add_argument("--noise", type=float, default=0.05,
                     help="MC counting noise on theta in the transfer runs")
     ap.add_argument("--ls-budget", type=int, default=0,
@@ -146,8 +188,11 @@ def main():
     weight = max(1.0, a.noise ** 2 * SPB)
     per_run = a.pi2_max * SPB * NBIN / weight
     n_runs = a.cases * (a.samples + 1)
-    print(f"transfer  AR {a.ar_src:.0f} -> {a.ar_tgt:.0f}   "
-          f"target bottom coverage {a.target:.2f}")
+    print(f"transfer  AR {a.ar_src:.0f} -> {a.ar_tgt:.0f}")
+    print(f"target    " + (f"bottom coverage {a.target:.2f}" if a.target > 0
+                           else "the bottom coverage the source wafer achieved"))
+    print(f"cases     s0 > {a.min_ratio:g} x (1 - reemit): the ALD-like part of "
+          f"the prior, see the module docstring")
     print(f"runs      {n_runs} ({a.cases} cases x {a.samples} posterior samples "
           f"+ 1 truth each)")
     print(f"budget    <= {per_run:,.0f} pseudo-particles per run "
@@ -163,16 +208,28 @@ def main():
     from evaluate import load_model, posterior
     dev = torch.device(a.device)
     net, zmu, zsd = load_model(a.model, dev)
-    xs, cs, truths, obss, masks = [], [], [], [], []
-    for i in range(a.cases):
-        t, o, m, AR, T = B.make_case(i, AR=a.ar_src)
+    picked = pick_cases(a.cases, a.ar_src, a.min_ratio)
+    idxs = [k[0] for k in picked]
+    xs, cs, truths, obss, masks, targets = [], [], [], [], [], []
+    print(f"\n  case   index      s0   reemit   s0/(1-reemit)   "
+          f"source bottom coverage")
+    for k, (i, t, o, m, AR, T) in enumerate(picked):
         xi, ci = D.features(o[None].astype(np.float32),
                             m[None].astype(np.float32), np.array([AR]))
         xs.append(xi); cs.append(ci)
         truths.append(t); obss.append(o); masks.append(m)
+        # The spec is read off the source wafer.  The clean profile is used, so
+        # the 3 % measurement noise on the spec itself is not propagated -- it is
+        # a number the engineer chooses, not a quantity being inferred.
+        src = B.forward(t, a.ar_src, seed=B.BENCH_SHARD * 100_003 + i)
+        tgt = float(a.target) if a.target > 0 else float(src[NBIN - 1])
+        targets.append(tgt)
+        print(f"  {k:4d}   {i:5d}   {t['s0']:6.4f}   {t['reemit']:6.4f}   "
+              f"{t['s0']/(1-t['reemit']):13.1f}   {src[NBIN-1]:10.3f}"
+              f"{'   <- target' if a.target <= 0 else ''}")
     samp, _ = posterior(net, np.concatenate(xs), np.concatenate(cs), dev,
                         n_samp=a.samples)
-    post = np.stack([D.z_to_targets(samp[i] * zsd + zmu)
+    post = np.stack([D.z_to_targets(samp[i] * zsd + zmu, a.ar_src)
                      for i in range(a.cases)])          # (cases, samples, 4)
     jj = {n: D.TARGETS.index(n) for n in D.TARGETS}
 
@@ -190,16 +247,17 @@ def main():
     # --------------------------------------------------------- transfer runs
     tasks = []
     for i in range(a.cases):
+        tg = targets[i]
         for s in range(a.samples):
             tasks.append((i, s, post[i, s, jj["s0"]], post[i, s, jj["n_steric"]],
-                          post[i, s, jj["reemit"]]))
+                          post[i, s, jj["reemit"]], tg))
         tasks.append((i, -1, truths[i]["s0"], truths[i]["n_steric"],
-                      truths[i]["reemit"]))            # truth
+                      truths[i]["reemit"], tg))        # truth
         if ls[i] is not None:
             tasks.append((i, -2, ls[i]["s0"], ls[i]["n_steric"],
-                          ls[i]["reemit"]))            # least squares
+                          ls[i]["reemit"], tg))        # least squares
 
-    job = dict(AR_tgt=a.ar_tgt, grid=grid, weight=weight, target=a.target)
+    job = dict(AR_tgt=a.ar_tgt, grid=grid, weight=weight)
     workers = a.workers or max(1, (os.cpu_count() or 2) - 1)
     print(f"\nsimulating at AR {a.ar_tgt:.0f} on {workers} workers "
           f"({len(tasks)} runs) ...", flush=True)
@@ -229,8 +287,8 @@ def main():
     # ------------------------------------------------------------- the answer
     scale = a.ar_tgt / a.ar_src
     recs = []
-    print("\n  dose multiplier needed to reach "
-          f"{a.target*100:.0f} % bottom coverage at AR {a.ar_tgt:.0f},")
+    print(f"\n  dose multiplier to hold the source wafer's bottom coverage "
+          f"at AR {a.ar_tgt:.0f},")
     print(f"  relative to the dose already used at AR {a.ar_src:.0f}\n")
     print("  case      truth      posterior median   68 % band          "
           "90 % band        in band   censored")
@@ -243,8 +301,10 @@ def main():
         ok = np.isfinite(q)
         m = q[ok] / p2[ok] * scale
         cens = 1.0 - ok.mean()
-        if len(m) < 5 or not np.isfinite(m_true):
-            print(f"  {i:3d}   too many censored runs to report")
+        if ok.mean() < 0.80 or not np.isfinite(m_true):
+            print(f"  {i:3d}   censored: the target is out of reach inside "
+                  f"Pi2 <= {a.pi2_max:g} for {(1-ok.mean())*100:.0f} % of the "
+                  f"posterior" + ("" if np.isfinite(m_true) else " and for the truth"))
             continue
         lo68, hi68 = np.quantile(m, [0.16, 0.84])
         lo90, hi90 = np.quantile(m, [0.05, 0.95])
@@ -254,8 +314,10 @@ def main():
         rec = dict(case=i, truth=float(m_true), median=float(np.median(m)),
                    q16=float(lo68), q84=float(hi68), q05=float(lo90),
                    q95=float(hi90), censored=float(cens),
-                   AR_src=a.ar_src, AR_tgt=a.ar_tgt,
+                   AR_src=a.ar_src, AR_tgt=a.ar_tgt, draw=int(idxs[i]),
+                   target=float(targets[i]),
                    s0_true=float(truths[i]["s0"]),
+                   reemit_true=float(truths[i]["reemit"]),
                    pi1_src=float(a.ar_src * np.sqrt(truths[i]["s0"])))
         if ls[i] is not None and np.isfinite(res[(i, -2)]):
             rec["ls"] = float(res[(i, -2)] / ls[i]["pi2"] * scale)
@@ -301,8 +363,9 @@ def make_figure(recs, curves, pi2_axis, a):
                     label="Posterior, 90 % band")
     ax.plot(pi2_axis, mid, color="#2874a6", lw=2, label="Posterior median")
     ax.plot(pi2_axis, curves[(show, -1)], "k--", lw=2, label="Truth")
-    ax.axhline(a.target, color="#c0392b", lw=1.2, ls=":",
-               label=f"Target coverage {a.target:.2f}")
+    ax.axhline(recs[0]["target"], color="#c0392b", lw=1.2, ls=":",
+               label=f"Target coverage {recs[0]['target']:.2f}"
+                     " (held from the source wafer)")
     ax.set_xscale("log")
     ax.set_xlabel(r"Dose per surface site $\Pi_2$ at the new aspect ratio",
                   fontsize=12)
@@ -324,8 +387,9 @@ def make_figure(recs, curves, pi2_axis, a):
         xs = [i for i, r in enumerate(recs) if "ls" in r]
         ax.plot(xs, [recs[i]["ls"] for i in xs], "x", ms=9, mew=2.2,
                 color="#c0392b", label="Least squares, point estimate")
-    ax.set_xticks(x); ax.set_xticklabels([str(r["case"]) for r in recs])
-    ax.set_xlabel("Benchmark case", fontsize=12)
+    ax.set_xticks(x); ax.set_xticklabels([str(r["draw"]) for r in recs])
+
+    ax.set_xlabel("Benchmark case (prior draw index)", fontsize=12)
     ax.set_ylabel(f"Dose multiplier for AR {a.ar_src:.0f} "
                   fr"$\rightarrow$ {a.ar_tgt:.0f}", fontsize=12)
     ax.set_yscale("log")

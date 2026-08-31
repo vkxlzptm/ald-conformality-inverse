@@ -1,6 +1,6 @@
 # 인수인계 — ALD Conformality Inverse Problem
 
-최초 2026-08-27. **최종 갱신 2026-08-27 (세션 2: 기하·kMC 결정 완료, 데이터 생성기 작성).**
+최초 2026-08-27. **최종 갱신 2026-08-31 (세션 3: 학습·평가 완료, 누설 게이트 통과, 전이 시험 코드 작성).**
 **기술 내용은 `README.md` 가 정본이다. 이 문서는 "왜 그렇게 됐는지"와 "지금 어디까지 왔는지"만 담는다.**
 
 ---
@@ -79,7 +79,28 @@ amortized inference.** 측정마다 반복되는 시뮬레이션 최적화 루�
     **교훈: 코드 짜기 전에 "무엇을 정하고/재고/모르는가" 표를 먼저 못 박을 것.**
     이 표가 없어서 하루에 관측 모델을 세 번 고쳤다.
 
-## 5. 현재 상태 (세션 2 종료 시점)
+11. **(세션 3) "AR 이 높으면 바닥이 안 덮이는 게 당연하다" → 원인이 AR 이 아니었다.**
+    사용자가 "표면확산을 무시해서 그런 것 아니냐"고 물었고, 실제로 재보니 둘 다 아니었다.
+    가르는 것은 **바운스당 소실 (1−p_reemit) 대 s₀ 의 경쟁**이고, prior 에서 **44 % 의 draw 가
+    소실 > s₀** 인 영역이다 = ALD window 밖. 표면확산 무시는 문헌 표준(Cremers, Gordon)이고
+    실제 ALD 의 고AR conformality 도 흡착종 확산이 아니라 전구체 재방출이 만든다 (모델에 있음).
+    → 목표치를 낮추는 대신 **전이 시험 케이스를 ALD 영역으로 필터**. README §4-h.
+    **"당연하다"로 넘기려던 것을 사용자가 붙잡아서 잡힌 건이다.**
+
+12. **(세션 3) leak_test 실측이 README 의 12.2 % 와 어긋났다 → 19.5 % 로 정정.**
+    옛 수치는 더 작은 데이터셋에서 잰 것. 정본을 재생성본 기준으로 갱신했다.
+
+13. **(세션 3) Π₁ 이 근거 없이 출력에서 사라져 있었다 — 사용자가 발견.**
+    원안(§4-b)은 NN 이 Π₁·Π₂·Π₃·Π₄ 를 추정하는 것이었다. Π₂ 이동(§4-f·§4-g)과
+    Π₄ 외부화(§2-4)는 근거가 기록돼 있는데, **Π₁ → s₀ 는 기록이 없었다.**
+    §4-b 가 §2 와 모순인 채로 남아 있었고(“NN 은 Π 를 추정”, “dose·T 가 알려진 조건”),
+    세션 3 에서 §4-b 를 현재 사양으로 고쳤다.
+    AR 이 조건이라 표현력은 사실상 동일하고, 실제 차이는 손실의 z-정규화 기준뿐이다
+    (실측: log s₀ 의 sd 1.51 vs log Π₁ 의 sd 0.88 — 무시할 차이는 아니다).
+    → **추측 대신 소거 실험으로 결론낸다** (`src/ablation_param.py`, 6절 2번).
+    **교훈: 사양을 바꿀 때 옛 절을 같이 고치지 않으면 정본이 둘이 된다.**
+
+## 5. 현재 상태 (세션 3 종료 시점)
 
 **저장소**: `https://github.com/vkxlzptm/ald-conformality-inverse`
 - 맥 `~/projects/PINN/ald-conformality-inverse` (작업·편집·baseline 실행)
@@ -104,46 +125,74 @@ amortized inference.** 측정마다 반복되는 시뮬레이션 최적화 루�
 | `src/evaluate.py` | 정확도·보정·baseline 대조 ✅ |
 | `src/arrhenius_fit.py` | ln s₀ vs 1/T 회귀 → Ea(eV), η ✅ |
 | `src/baseline_ls.py` | 최소제곱 baseline (무차원 4개 미지수) ✅ |
-| `src/leak_test.py` | ⚠ **옛 `data.py` 인터페이스. 지금 돌리면 깨진다. 고쳐야 함** |
+| `src/leak_test.py` | **전면 재작성 ✅ 게이트 통과** (4검사 + 지터제거 음성대조) |
+| `src/transfer_ar.py` | **신규 — 검증 3 (AR 전이). 코드·비용 검증 완료, 본실행 미실시** |
 | `src/fig_*.py` | 워크플로·구조·기하검증·NM 설명 그림 ✅ |
 
 **데이터**
-- `results/dataset/` — Π₂ 지터 적용본. **세션 종료 시점에 재생성 중이었다.**
-  `--shards 0-599` 로 600 shard = 108,000 draw = **324,000 웨이퍼 예제**. 약 5시간
+- `results/dataset/` — Π₂ 지터 적용본, **재생성 완료** (데스크톱). 600 shard,
+  train 540 / val 30 / test 30 shard
 - `results/dataset_v1_leaky/` — 지터 전 구본. 누설 있음. 쓰지 말 것
 - 재생성 명령: `nohup python -u src/generate_dataset.py --shards 0-599 --workers 6 > gen3.log 2>&1 &`
 
 **측정된 결과 (유효)**
 - 투과확률 MC vs Clausing: AR 0.5~40 에서 ≤0.25 % 일치 → `figures/geometry_validation.png`
 - Π₁ = AR√s₀ 형상 붕괴 (원통에서 ±8 %)
-- Π₂ 누설: 지터 전 오라클 오차 0.00 % → 지터 후 12.2 %
+- **누설 게이트 통과** (`src/leak_test.py`, 600 shard): 6후보 열거 오차 19.5 %,
+  조건만 kNN 의 n_sites 23.3 % (null 26.3 %). 지터 제거 음성대조는 각각 0.00 % / 1.85 %
+  로 옛 누설을 재현 → 게이트에 이빨 있음. README §4-g
+- **NN vs 최소제곱** (같은 벤치마크 8케이스) → `figures/evaluation.png`
+
+  | | NN | 최소제곱 |
+  |---|---|---|
+  | s₀ | 24 % | 72 % |
+  | n | 9 % | 23 % |
+  | 재방출 | 0.3 pt | 3.4 pt |
+  | Π₂ | 28 % | 39 % |
+
+  보정 곡선 4개 모두 대각선에 일치. **단, in-distribution 보정은 쉬운 쪽이다** —
+  학습·시험이 같은 시뮬레이터·같은 prior. 발표에서 여기에 무게를 싣지 말 것.
+- **Arrhenius** → `figures/arrhenius.png`. 산포는 넓으나 보정 정확. 낮은 Ea 를 못 맞추는 것은
+  §4-e 예측대로 (15 kJ/mol ≈ 155 meV 아래는 노이즈에 묻힘). 예시: 참 301 meV → 314 [286, 338]
+- **재방출 prior 문제 발견** — README §4-h. 학습셋 44 % 가 ALD window 밖
 
 **무효 — 다시 돌려야 하는 것**
-- 이전 학습 결과 (Π₂ 누설 + 옛 사양)
-- 이전 `baseline.log` / `baseline.json` (미지수 정의가 바뀜)
 - `docs/nelder_mead_explained.png` (옛 조건으로 계산된 지형. `--redo` 필요)
 
-**아직 없는 것**: 검증 3(AR 전이), 검증 4(모델 오설정), 발표자료.
+**아직 없는 것**: 검증 3 본실행, 검증 4(모델 오설정), 발표자료.
 
 ## 6. 다음 할 일
 
-**즉시 (순서 고정)**
-1. 맥 `./sync.sh` → 데스크톱 `git pull`
-2. 데스크톱: 데이터 재생성 완료 확인 → `nohup python -u src/train.py --epochs 60 > train.log 2>&1 &`
-   (예제 3배라 에폭당 100초 안팎 예상 — **첫 에폭 시간 재고 에폭 수 조정**)
-3. 맥: `nohup python -u src/baseline_ls.py --cases 8 --budget 1500 --starts 2 --workers 8 > baseline.log 2>&1 &`
-4. `src/leak_test.py` 를 새 `data.py` 에 맞게 수정 → 재생성 데이터로 누설 재검증 (**게이트**)
-5. 데스크톱: `python src/evaluate.py --cases 8`, `python src/arrhenius_fit.py`
-
-**그다음 — 헤드라인 결과**
-6. **검증 3 (AR 전이).** 이게 프로젝트 가치를 그림 한 장으로 보여주는 자리다:
-   AR 20 관측 → 사후분포 200 샘플 → 각 샘플로 AR 50 MC 1회 (체크포인트로 dose 곡선 전체) →
-   **필요 dose 예측 밴드** vs 정답 시뮬. 6코어 10분.
-7. 발표자료
+**즉시**
+1. **검증 3 본실행** (데스크톱 — `results/model/best.pt` 가 거기에만 있다):
+   ```
+   python src/transfer_ar.py --dry-run                       # 예산 확인
+   nohup python -u src/transfer_ar.py --cases 6 --samples 100 --workers 6 \
+       > transfer.log 2>&1 &                                 # 10~15분 예상
+   ```
+   붙이려면 `--ls-budget 1500` (케이스당 1500 시뮬 콜 추가 — 이게 바로 NN 이 없앤 비용이다).
+   실측 예비값 (정답 파라미터, 6케이스): 필요 Π₂ 46~138, **dose 배수 15~35배**, censoring 0.
+2. **Π₁ vs s₀ 소거 실험** (§6, README §4-b 의 미기록 변경을 실측으로 결론내는 자리).
+   **순서 중요 — 2-a 를 빼먹으면 대조군이 사라져 소거 실험이 성립하지 않는다.**
+   ```
+   cp results/model/best.pt results/model/best_s0.pt          # 2-a 대조군 백업
+   nohup python -u src/train.py --target-param pi1 \
+       --out results/model_pi1 --epochs <현행과 동일> > train_pi1.log 2>&1 &
+   python src/ablation_param.py --models results/model/best.pt \
+                                         results/model_pi1/best.pt
+   ```
+   에폭 수·seed·데이터는 현행 학습과 **똑같이** 맞춰야 공정한 대조다 (`results/model/history.json`
+   에서 에폭 수 확인). 결과를 README §6 표에 숫자로 적는다.
+3. `docs/nelder_mead_explained.png` 재생성 (`python src/fig_nelder_mead.py --redo`)
+4. 발표자료
 
 **시간 남으면**
-8. full-covariance MDN 헤드 (보정 곡선이 어긋날 때만)
-9. MLP vs CNN 소거 실험, 완전 포화 기준 AR 지수 재측정, 검증 4
+5. `reemit` prior 를 `U(0.98, 1.0)` 등으로 좁혀 **데이터 재생성 + 재학습** (§4-h 근본 해결, 5시간)
+6. 검증 4 (모델 오설정), full-covariance MDN 헤드, MLP vs CNN 소거 실험,
+   완전 포화 기준 AR 지수 재측정
+
+**세션 3 에서 끝난 것**: 데이터 재생성, 학습, `evaluate.py --cases 8`, `arrhenius_fit.py`,
+`leak_test.py` 재작성 + 게이트 통과, `transfer_ar.py` 작성.
 
 ## 7. 미결정
 
@@ -151,6 +200,7 @@ amortized inference.** 측정마다 반복되는 시뮬레이션 최적화 루�
 - [ ] 완전 포화 기준(99 %)으로 원통에서 AR 지수가 2 에 접근하는지 — 미측정
 - [ ] 마스터 폴더 `PINN` 개명 (후보 `semicon-ml-portfolio`)
 - [ ] 순방향 대리모델(surrogate) 도입 여부 — 데이터는 이미 있음. 지금은 **안 함** (검증은 진짜 MC 로)
+- [ ] `reemit` prior 재설정 + 재생성 여부 (§4-h). 지금은 전이 시험 케이스 필터로 대응 중
 
 ## 8. 작업 방식 메모
 

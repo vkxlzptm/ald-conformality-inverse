@@ -31,6 +31,17 @@ KJMOL_PER_EV = 96.48533212
 
 TARGETS = ["s0", "n_steric", "reemit", "pi2"]
 LOG_TARGETS = {"s0", "pi2"}
+
+# Which dimensionless group the first target is expressed in.
+#   "s0"  : the network predicts log s0 directly
+#   "pi1" : it predicts log Pi1 = log AR + 0.5 log s0, the group the profile
+#           shape actually collapses on (README 4-2)
+# AR is a network input either way, so the two are in bijection and the network
+# can construct one from the other.  The real difference is which quantity the
+# loss is z-normalised in.  Which is better is measured, not assumed:
+# src/ablation_param.py.  Everything outside this module works in physical units
+# (s0), so nothing downstream has to know which one is in use.
+TARGET_PARAM = "s0"
 MEAS_NOISE = 0.03               # measurement noise the network is trained for
 N_MASKED = 10                   # depth bins missing from a measurement
 
@@ -92,20 +103,53 @@ def split_ids(root, frac=(0.90, 0.05, 0.05)):
 
 
 # ------------------------------------------------------------ target transform
-def targets_to_z(p):
+def set_target_param(mode):
+    global TARGET_PARAM
+    if mode not in ("s0", "pi1"):
+        raise ValueError(f"target parametrisation must be s0 or pi1, got {mode}")
+    TARGET_PARAM = mode
+
+
+def _ar(AR):
+    if AR is None:
+        raise ValueError("AR is required when the first target is Pi1")
+    return np.log(np.asarray(AR, dtype=np.float64))
+
+
+def targets_to_z(p, AR=None, mode=None):
+    """Physical targets -> the space the network is trained in (before z-scoring)."""
+    mode = mode or TARGET_PARAM
     z = np.array(p, dtype=np.float64, copy=True)
     for j, name in enumerate(TARGETS):
         if name in LOG_TARGETS:
             z[:, j] = np.log(np.maximum(p[:, j], 1e-8))
+    if mode == "pi1":
+        z[:, 0] = _ar(AR) + 0.5 * z[:, 0]              # ln Pi1 = ln AR + ln sqrt(s0)
     return z
 
 
-def z_to_targets(z):
+def z_to_targets(z, AR=None, mode=None):
+    """Inverse of targets_to_z: always returns physical units, s0 included."""
+    mode = mode or TARGET_PARAM
     out = np.array(z, dtype=np.float64, copy=True)
+    if mode == "pi1":
+        out[:, 0] = 2.0 * (out[:, 0] - _ar(AR))        # back to ln s0
     for j, name in enumerate(TARGETS):
         if name in LOG_TARGETS:
             out[:, j] = np.exp(out[:, j])
     return out
+
+
+def ln_s0_from_z0(z0, AR=None, mode=None):
+    """First target coordinate (un-z-scored) -> ln s0, in either parametrisation.
+
+    Used by the Arrhenius fit, which needs ln s0 and nothing else.  Note that a
+    constant offset would drop out of the slope anyway, since AR is fixed inside
+    one temperature split -- but the factor of 2 does not, so this is not
+    optional.
+    """
+    mode = mode or TARGET_PARAM
+    return z0 if mode == "s0" else 2.0 * (z0 - _ar(AR))
 
 
 # --------------------------------------------------------- observation model

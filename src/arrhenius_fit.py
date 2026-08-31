@@ -63,7 +63,8 @@ def main():
     samp, _ = posterior(net, x, c, dev, n_samp=a.samples)      # (N, S, 4)
 
     j = D.TARGETS.index("s0")
-    ln_s0 = samp[:, :, j] * zsd[j] + zmu[j]        # already log space
+    z0 = samp[:, :, j] * zsd[j] + zmu[j]
+    ln_s0 = D.ln_s0_from_z0(z0, d["AR"][:, None])  # s0 or Pi1 parametrisation
 
     # group the wafers that belong to one temperature split
     groups, inv = np.unique(d["group"], return_inverse=True)
