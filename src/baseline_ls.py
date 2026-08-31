@@ -78,10 +78,17 @@ def forward(p, AR, seed):
     return snaps[0]
 
 
-def make_case(idx):
-    """Reproducible benchmark case, drawn from the same prior as the training set."""
+def make_case(idx, AR=None):
+    """Reproducible benchmark case, drawn from the same prior as the training set.
+
+    `AR` overrides the drawn aspect ratio without touching the random stream, so
+    the transfer study (src/transfer_ar.py) can put every case at one AR and still
+    reproduce the cases used here.
+    """
     rng = np.random.default_rng(1_000_003 + BENCH_SHARD + idx)
     q = G.draw_params(rng)
+    if AR is not None:
+        q["AR"] = float(AR)
     pi2 = float(G.PI2_CKPT[3] * np.exp(rng.uniform(-G.PI2_JITTER, G.PI2_JITTER)))
     T = float(G.TEMPS_K[rng.integers(len(G.TEMPS_K))])
     truth = dict(s0=float(G.s0_of_T(q["s0_ref"], q["Ea"], T)),

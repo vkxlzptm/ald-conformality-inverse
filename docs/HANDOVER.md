@@ -79,49 +79,78 @@ amortized inference.** 측정마다 반복되는 시뮬레이션 최적화 루�
     **교훈: 코드 짜기 전에 "무엇을 정하고/재고/모르는가" 표를 먼저 못 박을 것.**
     이 표가 없어서 하루에 관측 모델을 세 번 고쳤다.
 
-## 5. 현재 상태
+## 5. 현재 상태 (세션 2 종료 시점)
 
 **저장소**: `https://github.com/vkxlzptm/ald-conformality-inverse`
-- 로컬 경로: 맥 `~/projects/PINN/ald-conformality-inverse` (마스터 폴더 `PINN` 개명 예정)
-- 커밋 이메일 `41114918+vkxlzptm@users.noreply.github.com`, SSH 키 양쪽 머신 등록됨
-- **최초 push 완료 여부는 세션 2 시작 시점에 커밋 2개 존재 (`initial commit`, `sync from ...`)**
+- 맥 `~/projects/PINN/ald-conformality-inverse` (작업·편집·baseline 실행)
+- 데스크톱 `~/projects/PINN/ald-conformality-inverse` (데이터 생성·학습). Linux 6코어/12스레드
+- 커밋 이메일 `41114918+vkxlzptm@users.noreply.github.com`, SSH 키 양쪽 등록됨
+- 동기화는 맥에서 `./sync.sh` → 데스크톱에서 `git pull`
 
-**코드**
+> **브리지 주의**: AI 가 `device_bash` 로 git 을 돌리면 `.git/index.lock` 이 남고 지울 수 없다.
+> **브리지에서 git 명령을 실행하지 말 것.** 커밋·push 는 사용자가 직접.
 
-*주 경로 (원통) — 세션 2 신규*
-- `src/cyl_mc.py` — 3D 축대칭 원통 탄도 MC ✅ 동작·검증 완료
-- `src/clausing_ref.py` — Clausing 적분방정식 결정론적 해 ✅ 자체 검증 통과
-- `src/cyl_run.py` — dose 체크포인트 커널 ✅
-- `src/generate_dataset.py` — 학습 데이터 생성기 ✅ smoke test 통과, **본 실행 미시작**
-- `src/fig_geometry_validation.py` → `figures/geometry_validation.png` ✅
+**코드 — 전부 커밋됨, 컨테이너에서 전 경로 스모크 테스트 통과**
 
-*비교 연구용 (2D slit, 유지)*
-- `src/trench_mc.py`, `src/ar_scaling.py`, `src/fig_ar_scaling.py`, `src/pi_collapse.py`
+| 파일 | 상태 |
+|---|---|
+| `src/cyl_mc.py` | 3D 축대칭 원통 탄도 MC ✅ Clausing 대조 ≤0.25 % |
+| `src/clausing_ref.py` | Clausing 적분방정식 결정론적 해 ✅ 자체 검증 통과 |
+| `src/cyl_run.py` | dose 체크포인트 커널 ✅ |
+| `src/generate_dataset.py` | 데이터 생성. shard·이어하기·Π₂ 지터 ✅ |
+| `src/data.py` | 로딩·온도 단위 분해·측정 모델·무차원 변환 ✅ |
+| `src/model.py` | 1D CNN + MDN (in 3ch, cond 1, out 4, 649,512 params) ✅ |
+| `src/train.py` | 학습 루프 ✅ |
+| `src/evaluate.py` | 정확도·보정·baseline 대조 ✅ |
+| `src/arrhenius_fit.py` | ln s₀ vs 1/T 회귀 → Ea(eV), η ✅ |
+| `src/baseline_ls.py` | 최소제곱 baseline (무차원 4개 미지수) ✅ |
+| `src/leak_test.py` | ⚠ **옛 `data.py` 인터페이스. 지금 돌리면 깨진다. 고쳐야 함** |
+| `src/fig_*.py` | 워크플로·구조·기하검증·NM 설명 그림 ✅ |
 
-**아직 없는 것**: 학습 코드, MDN 헤드, 최소제곱 baseline, 검증 스크립트, 발표자료.
+**데이터**
+- `results/dataset/` — Π₂ 지터 적용본. **세션 종료 시점에 재생성 중이었다.**
+  `--shards 0-599` 로 600 shard = 108,000 draw = **324,000 웨이퍼 예제**. 약 5시간
+- `results/dataset_v1_leaky/` — 지터 전 구본. 누설 있음. 쓰지 말 것
+- 재생성 명령: `nohup python -u src/generate_dataset.py --shards 0-599 --workers 6 > gen3.log 2>&1 &`
 
-**주의 — 세션 2 종료 시 미커밋 상태**:
-데스크톱 브리지가 세션 중간에 끊겨 `src/cyl_run.py`, `src/generate_dataset.py`,
-갱신된 `README.md`·`docs/HANDOVER.md` 가 **채팅으로만 전달되고 폴더에 안 들어갔을 수 있다.**
-`git status` 로 먼저 확인할 것. `src/cyl_mc.py`, `src/clausing_ref.py`,
-`src/fig_geometry_validation.py`, `figures/geometry_validation.png` 는 커밋 확인됨.
+**측정된 결과 (유효)**
+- 투과확률 MC vs Clausing: AR 0.5~40 에서 ≤0.25 % 일치 → `figures/geometry_validation.png`
+- Π₁ = AR√s₀ 형상 붕괴 (원통에서 ±8 %)
+- Π₂ 누설: 지터 전 오라클 오차 0.00 % → 지터 후 12.2 %
 
-## 6. 다음 할 일 (순서대로, 2주 기준)
+**무효 — 다시 돌려야 하는 것**
+- 이전 학습 결과 (Π₂ 누설 + 옛 사양)
+- 이전 `baseline.log` / `baseline.json` (미지수 정의가 바뀜)
+- `docs/nelder_mead_explained.png` (옛 조건으로 계산된 지형. `--redo` 필요)
 
-1. **미커밋 파일 확인 후 커밋·push** (5절 주의 참조)
-2. **`.gitignore` 에 `results/dataset/` 추가** (npz 가 20 MB 를 넘긴다)
-3. **데이터 생성 실행** — 원격 데스크톱, tmux, 6 워커.
-   `python src/generate_dataset.py --dry-run` 로 먼저 추정 → 본 실행 7~8시간
-4. 학습 코드: 1D CNN(3채널 = 온도 3점) + Mixture Density head, Π 무차원 입력, log 공간
-5. 최소제곱 baseline 정면 대결 → 검증 1·2·3
-6. 발표자료 (정직성 원칙 유지)
-7. *시간 남으면*: 완전 포화 기준 AR 지수 재측정, 검증 4(모델 오설정)
+**아직 없는 것**: 검증 3(AR 전이), 검증 4(모델 오설정), 발표자료.
+
+## 6. 다음 할 일
+
+**즉시 (순서 고정)**
+1. 맥 `./sync.sh` → 데스크톱 `git pull`
+2. 데스크톱: 데이터 재생성 완료 확인 → `nohup python -u src/train.py --epochs 60 > train.log 2>&1 &`
+   (예제 3배라 에폭당 100초 안팎 예상 — **첫 에폭 시간 재고 에폭 수 조정**)
+3. 맥: `nohup python -u src/baseline_ls.py --cases 8 --budget 1500 --starts 2 --workers 8 > baseline.log 2>&1 &`
+4. `src/leak_test.py` 를 새 `data.py` 에 맞게 수정 → 재생성 데이터로 누설 재검증 (**게이트**)
+5. 데스크톱: `python src/evaluate.py --cases 8`, `python src/arrhenius_fit.py`
+
+**그다음 — 헤드라인 결과**
+6. **검증 3 (AR 전이).** 이게 프로젝트 가치를 그림 한 장으로 보여주는 자리다:
+   AR 20 관측 → 사후분포 200 샘플 → 각 샘플로 AR 50 MC 1회 (체크포인트로 dose 곡선 전체) →
+   **필요 dose 예측 밴드** vs 정답 시뮬. 6코어 10분.
+7. 발표자료
+
+**시간 남으면**
+8. full-covariance MDN 헤드 (보정 곡선이 어긋날 때만)
+9. MLP vs CNN 소거 실험, 완전 포화 기준 AR 지수 재측정, 검증 4
 
 ## 7. 미결정
 
-- [ ] 인터뷰 **정확한 날짜** (2주 이내라는 것만 확인됨)
+- [ ] 인터뷰 **정확한 날짜** (2주 이내만 확인)
 - [ ] 완전 포화 기준(99 %)으로 원통에서 AR 지수가 2 에 접근하는지 — 미측정
 - [ ] 마스터 폴더 `PINN` 개명 (후보 `semicon-ml-portfolio`)
+- [ ] 순방향 대리모델(surrogate) 도입 여부 — 데이터는 이미 있음. 지금은 **안 함** (검증은 진짜 MC 로)
 
 ## 8. 작업 방식 메모
 

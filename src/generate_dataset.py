@@ -168,12 +168,16 @@ def main():
                     help="0 = os.cpu_count() - 1")
     ap.add_argument("--draws", type=int, default=0,
                     help="override DRAWS_PER_SHARD (testing)")
+    ap.add_argument("--out", default=None,
+                    help="output directory (default: results/dataset)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    global DRAWS_PER_SHARD
+    global DRAWS_PER_SHARD, OUT_DIR
     if args.draws:
         DRAWS_PER_SHARD = args.draws
+    if args.out:
+        OUT_DIR = os.path.abspath(args.out)
     os.makedirs(OUT_DIR, exist_ok=True)
     if args.shards is None:
         ids = list(range(N_SHARD))
